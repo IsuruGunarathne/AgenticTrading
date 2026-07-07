@@ -34,6 +34,19 @@ DJIA_30 = [
 # Top 10 DJIA stocks (for 10-stock buy-and-hold mode)
 TOP_10_STOCKS = ["AAPL", "MSFT", "JPM", "V", "JNJ", "WMT", "PG", "MA", "HD", "DIS"]
 
+# Binance crypto pairs (must match backtest_crypto_agent.py). These are the
+# valid symbols for the crypto trading path; kept as USDT pairs with no slash to
+# match the Binance REST API symbol convention.
+CRYPTO_PAIRS = [
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+    "ADAUSDT", "DOGEUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
+]
+
+# The full tradable universe accepted by the decision validator: DJIA stocks
+# (Alpaca path) plus Binance crypto pairs. Symbol validation checks against this
+# union so both the stock and crypto backtests share one validator.
+ALL_SYMBOLS = DJIA_30 + CRYPTO_PAIRS
+
 
 class TradingAction(str, Enum):
     """Allowed trading actions"""
@@ -69,9 +82,12 @@ class LLMTradingDecision(BaseModel):
     @field_validator('symbol')
     @classmethod
     def validate_symbol(cls, v):
-        """Ensure symbol is in DJIA 30"""
-        if v not in DJIA_30:
-            raise ValueError(f"Invalid symbol: {v}. Must be one of {DJIA_30}")
+        """Ensure symbol is a supported DJIA stock or Binance crypto pair."""
+        if v not in ALL_SYMBOLS:
+            raise ValueError(
+                f"Invalid symbol: {v}. Must be a DJIA stock ({DJIA_30}) "
+                f"or a supported crypto pair ({CRYPTO_PAIRS})"
+            )
         return v
     
     @field_validator('confidence')
