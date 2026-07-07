@@ -20,6 +20,7 @@ Usage:
     python3 dashboard/scripts/backtest_crypto_agent.py --start 2026-06-01 --end 2026-07-01 --interval 1h
 """
 
+import os
 import sys
 import argparse
 import uuid
@@ -50,8 +51,10 @@ from dashboard.backend.infrastructure.market_data.binance_bars import (
 )
 from dashboard.backend.infrastructure.llm.backtest_harness import (
     HAS_ANTHROPIC,
-    default_model_name,
+    HAS_OPENAI,
+    OPENAI_COMPATIBLE_MODEL_NAME,
     make_llm_client,
+    make_openai_client,
 )
 
 # ============================================================================
@@ -98,18 +101,23 @@ class CryptoBacktester:
         self.interval = interval
         self.session_id = session_id
         self.pairs = pairs or DEFAULT_PAIRS
-        self.model = model or default_model_name()
+        # Crypto defaults to DeepSeek v4 Pro via OpenCode Zen (OpenAI-compatible);
+        # override with --model. The stock backtest keeps its Anthropic default.
+        self.model = model or OPENAI_COMPATIBLE_MODEL_NAME
         self.data_loader = BinanceDataLoader()
         self.all_data: Dict = {}
-        self.use_llm = use_llm and HAS_ANTHROPIC
+        self.use_llm = use_llm and (HAS_OPENAI or HAS_ANTHROPIC)
         self.llm_client = None
 
         if self.use_llm:
-            self.llm_client = make_llm_client()
+            # Prefer the OpenAI-compatible provider (OpenCode Zen / DeepSeek) that
+            # crypto defaults to; fall back to CommonStack/Anthropic if only those
+            # keys are set.
+            self.llm_client = make_openai_client() or make_llm_client()
             if self.llm_client is None:
                 print(
-                    "⚠️  No LLM key (COMMONSTACK_API_KEY / ANTHROPIC_API_KEY) set. "
-                    "Running without LLM."
+                    "⚠️  No LLM key (OPENCODE_ZEN_API_KEY / OPENAI_API_KEY / "
+                    "COMMONSTACK_API_KEY / ANTHROPIC_API_KEY) set. Running without LLM."
                 )
                 self.use_llm = False
             else:
@@ -197,6 +205,7 @@ class CryptoBacktester:
                     self.llm_client,
                     mode="safe_trading",
                     model=self.model,
+                    asset_type="crypto",
                 )
                 llm_calls_count += 1
                 if llm_calls_count == 1:
@@ -377,13 +386,29 @@ def main():
                         help="Use LLM for trading decisions (default: rule-based)")
     parser.add_argument("--no-llm", dest="use_llm", action="store_false",
                         help="Disable LLM, use rule-based logic")
-    parser.add_argument("--model", default=None, help="Override the LLM model id.")
+    parser.add_argument("--model", default=None,
+                        help=f"Override the LLM model id (default: {OPENAI_COMPATIBLE_MODEL_NAME}).")
 
     args = parser.parse_args()
 
     if args.clear:
         print("🗑️ Clearing all existing data...\n")
         db.clear_all()
+
+    # Surface a missing-key warning early when the LLM path was requested. The
+    # crypto backtest defaults to OpenCode Zen (OPENCODE_ZEN_API_KEY), but any of
+    # the supported keys works; without one the run falls back to rule-based.
+    if args.use_llm and not (
+        os.getenv("OPENCODE_ZEN_API_KEY")
+        or os.getenv("OPENAI_API_KEY")
+        or os.getenv("COMMONSTACK_API_KEY")
+        or os.getenv("ANTHROPIC_API_KEY")
+    ):
+        print(
+            "⚠️  --use-llm set but no LLM key found. Set OPENCODE_ZEN_API_KEY "
+            "(or OPENAI_API_KEY / COMMONSTACK_API_KEY / ANTHROPIC_API_KEY) to "
+            "enable the agent; otherwise it runs rule-based.\n"
+        )
 
     print(f"\n🚀 Crypto Agent Backtest Framework")
     print(f"{'='*70}")

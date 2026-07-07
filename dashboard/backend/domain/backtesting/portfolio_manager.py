@@ -101,7 +101,7 @@ class PortfolioManager:
             cash=self.cash,
         )
     
-    def make_trading_decision_with_llm(self, portfolio_state: Dict, llm_client, mode: str = "safe_trading", model: str = None, strategy_prompt: str = None) -> Dict:
+    def make_trading_decision_with_llm(self, portfolio_state: Dict, llm_client, mode: str = "safe_trading", model: str = None, strategy_prompt: str = None, asset_type: str = "stocks") -> Dict:
         """
         Make trading decisions using Claude LLM with technical indicators.
         
@@ -113,13 +113,18 @@ class PortfolioManager:
         
         Args:
             portfolio_state: Current portfolio state with market signals
-            llm_client: Anthropic client instance
+            llm_client: LLM client instance (Anthropic/CommonStack or an
+                OpenAI-compatible client such as OpenCode Zen)
             mode: "safe_trading" (risk management) or "buy_and_hold" (debug mode)
+            asset_type: "stocks" (default) or "crypto" — selects the system prompt
         
         Returns:
             {"actions": [list of trading actions]}
         """
-        if not HAS_ANTHROPIC or not llm_client:
+        # A truthy ``llm_client`` already means a client was successfully built
+        # (Anthropic-compatible or OpenAI-compatible); no need to also require the
+        # Anthropic SDK, which would wrongly block the OpenAI-only path.
+        if not llm_client:
             print("\u26a0️  LLM client not available, using rule-based fallback")
             return self.make_trading_decision(portfolio_state)
         
@@ -280,7 +285,7 @@ class PortfolioManager:
             # ================================================================
             # STEP 2: Call Claude with technical indicator analysis
             # ================================================================
-            response = _request_trading_decision(llm_client, prompt=prompt, model=model)
+            response = _request_trading_decision(llm_client, prompt=prompt, model=model, asset_type=asset_type)
 
             llm_response = _extract_response_text(response)
 
