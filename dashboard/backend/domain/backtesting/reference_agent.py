@@ -23,13 +23,32 @@ Behavior is byte-for-byte identical to the original method. In particular:
 No thresholds, formulas, strings, or default quantities are changed. The LLM
 decision workflow is intentionally NOT extracted here.
 
+Fractional sizing (opt-in): stocks trade in whole shares, but crypto trades in
+fractional units, and ``int(total_equity * 0.02 / price)`` is 0 whenever a unit
+costs more than 2% of equity (e.g. BTC or ETH with a $10k portfolio) — so the
+agent could never buy. With ``fractional=True`` the size is floored to
+``FRACTIONAL_DECIMALS`` places instead of to a whole unit. The default
+(``False``) keeps the original whole-share behavior exactly.
+
 This module is domain-only: it must not import Anthropic, Alpaca, the database,
 FastAPI, API routers, or scripts.
 """
 
+import math
 from typing import Dict, List
 
 import pandas as pd
+
+# Precision for fractional (crypto) order sizes. Flooring, not rounding, so the
+# order can never cost more than the 2% risk budget.
+FRACTIONAL_DECIMALS = 8
+
+
+def _position_size(risk_amount: float, price: float, fractional: bool):
+    if not fractional:
+        return int(risk_amount / price)
+    scale = 10 ** FRACTIONAL_DECIMALS
+    return math.floor(risk_amount / price * scale) / scale
 
 
 def make_rule_based_decision(
@@ -37,12 +56,14 @@ def make_rule_based_decision(
     portfolio_state: Dict,
     positions: Dict,
     cash: float,
+    fractional: bool = False,
 ) -> Dict:
     """Produce rule-based trading actions for the given portfolio state.
 
     ``portfolio_state`` must provide ``total_equity`` and ``market_signals`` (a
     mapping of symbol -> indicator dict). ``positions`` and ``cash`` reflect the
-    current holdings and available cash. Inputs are read only, never mutated.
+    current holdings and available cash. ``fractional`` sizes buys in fractional
+    units (crypto) instead of whole shares. Inputs are read only, never mutated.
     Returns ``{"actions": [...]}`` with the same action dictionaries the original
     method produced.
     """
@@ -67,7 +88,7 @@ def make_rule_based_decision(
         if not has_position and rsi < 30 and price < sma20:
             # Size: 2% of TOTAL PORTFOLIO per trade (not just cash)
             risk_amount = total_equity * 0.02
-            shares_to_buy = int(risk_amount / price)
+            shares_to_buy = _position_size(risk_amount, price, fractional)
             if shares_to_buy > 0 and shares_to_buy * price <= cash:
                 actions.append({
                     "symbol": symbol,

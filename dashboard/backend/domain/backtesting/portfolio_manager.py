@@ -56,8 +56,11 @@ from dashboard.backend.infrastructure.llm.backtest_harness import (
 class PortfolioManager:
     """Manages portfolio with hourly trading decisions based on indicators."""
     
-    def __init__(self, initial_capital: float = 100000):
+    def __init__(self, initial_capital: float = 100000, fractional_units: bool = False):
         self.initial_capital = initial_capital
+        # True for assets traded in fractional units (crypto): the rule-based
+        # agent then sizes orders fractionally instead of in whole shares.
+        self.fractional_units = fractional_units
         self.cash = initial_capital
         self.positions = {}  # {symbol: num_shares}
         self.entry_prices = {}  # {symbol: entry_price}
@@ -99,6 +102,7 @@ class PortfolioManager:
             portfolio_state=portfolio_state,
             positions=self.positions,
             cash=self.cash,
+            fractional=self.fractional_units,
         )
     
     def make_trading_decision_with_llm(self, portfolio_state: Dict, llm_client, mode: str = "safe_trading", model: str = None, strategy_prompt: str = None, asset_type: str = "stocks") -> Dict:
