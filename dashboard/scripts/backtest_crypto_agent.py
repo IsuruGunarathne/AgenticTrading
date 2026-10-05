@@ -152,7 +152,9 @@ class CryptoBacktester:
         llm_calls_count = 0
         llm_model = "rule-based"
 
-        manager = PortfolioManager(initial_capital=INITIAL_CAPITAL)
+        # Crypto trades in fractional units: without this, a 2%-of-equity order
+        # for BTC/ETH rounds down to 0 whole coins and the agent never trades.
+        manager = PortfolioManager(initial_capital=INITIAL_CAPITAL, fractional_units=True)
 
         # Collect all timestamps across pairs and keep bars with data for 80%+ pairs.
         all_timestamps = set()

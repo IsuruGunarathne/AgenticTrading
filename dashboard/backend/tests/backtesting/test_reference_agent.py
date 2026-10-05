@@ -268,3 +268,98 @@ def test_subclass_inherits_make_trading_decision():
     assert out["actions"][0]["action"] == "buy"
     assert pm.custom_method() == "ok"
     assert MyPM.make_trading_decision is bha.PortfolioManager.make_trading_decision
+
+
+# ---------------------------------------------------------------------------
+# Fractional sizing (crypto)
+# ---------------------------------------------------------------------------
+
+def _decide_fractional(state, positions=None, cash=10000):
+    return make_rule_based_decision(
+        portfolio_state=state,
+        positions=dict(positions or {}),
+        cash=cash,
+        fractional=True,
+    )
+
+
+def test_whole_share_default_cannot_buy_expensive_unit():
+    # The bug: $10k equity -> $200 budget; a BTC-priced unit floors to 0 shares.
+    state = _state(total_equity=10000, signals={
+        "BTCUSDT": _signal(price=86614.0, rsi=25, sma20=90000),
+    })
+    assert _decide(state, cash=10000) == {"actions": []}
+
+
+def test_fractional_buys_expensive_unit():
+    state = _state(total_equity=10000, signals={
+        "BTCUSDT": _signal(price=86614.0, rsi=25, sma20=90000),
+    })
+    actions = _decide_fractional(state)["actions"]
+    assert len(actions) == 1
+    a = actions[0]
+    assert a["symbol"] == "BTCUSDT" and a["action"] == "buy"
+    assert a["reason"] == "RSI oversold (25), price below MA"
+    assert a["shares"] == 0.00230909  # floor(200 / 86614, 8 dp)
+    assert 0 < a["shares"] * 86614.0 <= 200
+
+
+def test_fractional_floors_never_exceeds_budget():
+    for price in (3.0, 7.0, 0.3333, 86614.0, 123456.789):
+        state = _state(total_equity=10000, signals={
+            "X": _signal(price=price, rsi=10, sma20=price * 2),
+        })
+        shares = _decide_fractional(state)["actions"][0]["shares"]
+        assert shares * price <= 200 + 1e-9
+        assert round(shares, 8) == shares
+
+
+def test_fractional_still_respects_cash():
+    state = _state(total_equity=10000, signals={
+        "BTCUSDT": _signal(price=86614.0, rsi=25, sma20=90000),
+    })
+    assert _decide_fractional(state, cash=100) == {"actions": []}
+
+
+def test_fractional_sell_logic_unchanged():
+    state = _state(total_equity=10000, signals={
+        "BTCUSDT": _signal(price=90000.0, rsi=75, sma20=85000),
+    })
+    out = _decide_fractional(state, positions={"BTCUSDT": 0.0023})
+    assert out == {"actions": [{
+        "symbol": "BTCUSDT", "action": "sell", "shares": 0.0023,
+        "reason": "RSI overbought (75)",
+    }]}
+
+
+def test_portfolio_manager_fractional_flag():
+    state = _state(total_equity=10000, signals={
+        "BTCUSDT": _signal(price=86614.0, rsi=25, sma20=90000),
+    })
+    whole = bha.PortfolioManager(10000)
+    frac = bha.PortfolioManager(10000, fractional_units=True)
+    assert whole.make_trading_decision(state) == {"actions": []}
+    assert frac.make_trading_decision(state)["actions"][0]["shares"] == 0.00230909
+
+
+def test_crypto_backtester_uses_fractional_units(monkeypatch):
+    # The crypto backtester must build its PortfolioManager with
+    # fractional_units=True (the stock backtester keeps whole shares).
+    from dashboard.scripts import backtest_crypto_agent as bca
+
+    seen = {}
+    real_pm = bca.PortfolioManager
+
+    class SpyPM(real_pm):
+        def __init__(self, *args, **kwargs):
+            seen.update(kwargs)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(bca, "PortfolioManager", SpyPM)
+    bt = bca.CryptoBacktester("2026-01-01", "2026-01-02", pairs=["BTCUSDT"])
+    bt.all_data = {}
+    try:
+        bt.run_agent_backtest()
+    except Exception:
+        pass  # empty data is fine — only the constructor call matters here
+    assert seen.get("fractional_units") is True
