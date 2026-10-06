@@ -42,6 +42,7 @@ from dashboard.backend.domain.trading.execution import (
     execute_actions as _execute_actions,
 )
 from dashboard.backend.domain.backtesting.reference_agent import (
+    DEFAULT_POSITION_FRACTION as _DEFAULT_POSITION_FRACTION,
     make_rule_based_decision as _make_rule_based_decision,
 )
 from dashboard.backend.infrastructure.llm.backtest_harness import (
@@ -56,11 +57,14 @@ from dashboard.backend.infrastructure.llm.backtest_harness import (
 class PortfolioManager:
     """Manages portfolio with hourly trading decisions based on indicators."""
     
-    def __init__(self, initial_capital: float = 100000, fractional_units: bool = False):
+    def __init__(self, initial_capital: float = 100000, fractional_units: bool = False,
+                 position_fraction: float = _DEFAULT_POSITION_FRACTION):
         self.initial_capital = initial_capital
         # True for assets traded in fractional units (crypto): the rule-based
         # agent then sizes orders fractionally instead of in whole shares.
         self.fractional_units = fractional_units
+        # Share of total equity each rule-based buy spends (default 2%).
+        self.position_fraction = position_fraction
         self.cash = initial_capital
         self.positions = {}  # {symbol: num_shares}
         self.entry_prices = {}  # {symbol: entry_price}
@@ -103,6 +107,7 @@ class PortfolioManager:
             positions=self.positions,
             cash=self.cash,
             fractional=self.fractional_units,
+            position_fraction=self.position_fraction,
         )
     
     def make_trading_decision_with_llm(self, portfolio_state: Dict, llm_client, mode: str = "safe_trading", model: str = None, strategy_prompt: str = None, asset_type: str = "stocks") -> Dict:
