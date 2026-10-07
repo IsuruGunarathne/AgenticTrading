@@ -315,10 +315,14 @@ def test_fractional_floors_never_exceeds_budget():
 
 
 def test_fractional_still_respects_cash():
+    # Fractional mode caps the spend at available cash: $100 left against a
+    # $200 budget buys $100 worth (never more than cash); no cash, no buy.
     state = _state(total_equity=10000, signals={
         "BTCUSDT": _signal(price=86614.0, rsi=25, sma20=90000),
     })
-    assert _decide_fractional(state, cash=100) == {"actions": []}
+    shares = _decide_fractional(state, cash=100)["actions"][0]["shares"]
+    assert shares == 0.00115454 and shares * 86614.0 <= 100
+    assert _decide_fractional(state, cash=0) == {"actions": []}
 
 
 def test_fractional_sell_logic_unchanged():
@@ -362,4 +366,113 @@ def test_crypto_backtester_uses_fractional_units(monkeypatch):
         bt.run_agent_backtest()
     except Exception:
         pass  # empty data is fine — only the constructor call matters here
+    assert seen.get("fractional_units") is True
+
+
+# ---------------------------------------------------------------------------
+# Position size (position_fraction)
+# ---------------------------------------------------------------------------
+
+import pytest
+
+
+def _btc_state(equity=10000, price=80000.0):
+    return _state(total_equity=equity, signals={
+        "BTCUSDT": _signal(price=price, rsi=25, sma20=price * 1.1),
+    })
+
+
+def test_position_fraction_default_is_original_two_percent():
+    out = make_rule_based_decision(
+        portfolio_state=_btc_state(), positions={}, cash=10000, fractional=True,
+    )
+    assert out["actions"][0]["shares"] == 0.0025  # $200 / $80,000
+
+
+def test_position_fraction_scales_order():
+    out = make_rule_based_decision(
+        portfolio_state=_btc_state(), positions={}, cash=10000,
+        fractional=True, position_fraction=0.5,
+    )
+    assert out["actions"][0]["shares"] == 0.0625  # $5,000 / $80,000
+
+
+def test_full_allocation_single_pair():
+    out = make_rule_based_decision(
+        portfolio_state=_btc_state(), positions={}, cash=10000,
+        fractional=True, position_fraction=1.0,
+    )
+    shares = out["actions"][0]["shares"]
+    assert shares == 0.125 and shares * 80000.0 <= 10000
+
+
+def test_fractional_slot_capped_at_cash():
+    # Equity 10k but only 6k cash left: the 50% slot ($5k) fits; a 100% slot
+    # ($10k) is capped to the $6k available instead of being skipped.
+    out = make_rule_based_decision(
+        portfolio_state=_btc_state(), positions={}, cash=6000,
+        fractional=True, position_fraction=1.0,
+    )
+    shares = out["actions"][0]["shares"]
+    assert shares == 0.075 and shares * 80000.0 <= 6000
+
+
+def test_whole_share_mode_not_cash_capped():
+    # Stock (whole-share) behavior is unchanged: an order that costs more than
+    # cash is skipped, not shrunk.
+    state = _state(total_equity=100000, signals={"AAPL": _signal(price=100, rsi=25, sma20=110)})
+    out = make_rule_based_decision(
+        portfolio_state=state, positions={}, cash=1000, position_fraction=0.5,
+    )
+    assert out == {"actions": []}
+
+
+@pytest.mark.parametrize("bad", [0, -0.1, 1.5])
+def test_position_fraction_out_of_range_raises(bad):
+    with pytest.raises(ValueError):
+        make_rule_based_decision(
+            portfolio_state=_btc_state(), positions={}, cash=10000, position_fraction=bad,
+        )
+
+
+def test_portfolio_manager_passes_position_fraction():
+    pm = bha.PortfolioManager(10000, fractional_units=True, position_fraction=0.5)
+    assert pm.make_trading_decision(_btc_state())["actions"][0]["shares"] == 0.0625
+    assert bha.PortfolioManager(10000).position_fraction == 0.02
+
+
+def test_crypto_backtester_position_fraction_defaults_to_equal_slots():
+    from dashboard.scripts import backtest_crypto_agent as bca
+
+    one = bca.CryptoBacktester("2026-01-01", "2026-01-02", pairs=["BTCUSDT"])
+    four = bca.CryptoBacktester("2026-01-01", "2026-01-02",
+                                pairs=["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"])
+    custom = bca.CryptoBacktester("2026-01-01", "2026-01-02", pairs=["BTCUSDT"],
+                                  position_fraction=0.3)
+    assert one.position_fraction == 1.0
+    assert four.position_fraction == 0.25
+    assert custom.position_fraction == 0.3
+    with pytest.raises(ValueError):
+        bca.CryptoBacktester("2026-01-01", "2026-01-02", pairs=["BTCUSDT"], position_fraction=2)
+
+
+def test_crypto_backtester_passes_position_fraction(monkeypatch):
+    from dashboard.scripts import backtest_crypto_agent as bca
+
+    seen = {}
+    real_pm = bca.PortfolioManager
+
+    class SpyPM(real_pm):
+        def __init__(self, *args, **kwargs):
+            seen.update(kwargs)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(bca, "PortfolioManager", SpyPM)
+    bt = bca.CryptoBacktester("2026-01-01", "2026-01-02", pairs=["BTCUSDT", "ETHUSDT"])
+    bt.all_data = {}
+    try:
+        bt.run_agent_backtest()
+    except Exception:
+        pass  # empty data is fine — only the constructor call matters here
+    assert seen.get("position_fraction") == 0.5
     assert seen.get("fractional_units") is True

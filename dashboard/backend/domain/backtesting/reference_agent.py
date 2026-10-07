@@ -30,6 +30,14 @@ agent could never buy. With ``fractional=True`` the size is floored to
 ``FRACTIONAL_DECIMALS`` places instead of to a whole unit. The default
 (``False``) keeps the original whole-share behavior exactly.
 
+Position size (opt-in): each BUY spends ``position_fraction`` of total equity,
+defaulting to ``DEFAULT_POSITION_FRACTION`` (0.02, the original 2%). 2% suits a
+30-stock universe, but on a one- or few-pair crypto plan it caps exposure at
+~2% per pair and leaves the rest idle in cash. Callers (the crypto backtester)
+can pass a larger slot, e.g. ``1 / len(pairs)``. In fractional mode the spend is
+also capped at available cash, so a slot isn't skipped just because prices
+moved since the other slots were filled.
+
 This module is domain-only: it must not import Anthropic, Alpaca, the database,
 FastAPI, API routers, or scripts.
 """
@@ -38,6 +46,9 @@ import math
 from typing import Dict, List
 
 import pandas as pd
+
+# Share of total equity each rule-based BUY spends (the original sizing).
+DEFAULT_POSITION_FRACTION = 0.02
 
 # Precision for fractional (crypto) order sizes. Flooring, not rounding, so the
 # order can never cost more than the 2% risk budget.
@@ -57,16 +68,21 @@ def make_rule_based_decision(
     positions: Dict,
     cash: float,
     fractional: bool = False,
+    position_fraction: float = DEFAULT_POSITION_FRACTION,
 ) -> Dict:
     """Produce rule-based trading actions for the given portfolio state.
 
     ``portfolio_state`` must provide ``total_equity`` and ``market_signals`` (a
     mapping of symbol -> indicator dict). ``positions`` and ``cash`` reflect the
     current holdings and available cash. ``fractional`` sizes buys in fractional
-    units (crypto) instead of whole shares. Inputs are read only, never mutated.
+    units (crypto) instead of whole shares; ``position_fraction`` is the share of
+    total equity each buy spends (default 2%). Inputs are read only, never mutated.
     Returns ``{"actions": [...]}`` with the same action dictionaries the original
     method produced.
     """
+    if not 0 < position_fraction <= 1:
+        raise ValueError(f"position_fraction must be in (0, 1], got {position_fraction}")
+
     actions: List[Dict] = []
 
     # Calculate total portfolio equity for consistent position sizing
@@ -86,8 +102,10 @@ def make_rule_based_decision(
 
         # BUY logic: RSI < 30 (oversold)
         if not has_position and rsi < 30 and price < sma20:
-            # Size: 2% of TOTAL PORTFOLIO per trade (not just cash)
-            risk_amount = total_equity * 0.02
+            # Size: position_fraction (default 2%) of TOTAL PORTFOLIO per trade
+            risk_amount = total_equity * position_fraction
+            if fractional:
+                risk_amount = min(risk_amount, cash)
             shares_to_buy = _position_size(risk_amount, price, fractional)
             if shares_to_buy > 0 and shares_to_buy * price <= cash:
                 actions.append({

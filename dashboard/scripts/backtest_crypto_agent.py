@@ -85,7 +85,8 @@ class CryptoBacktester:
 
     def __init__(self, start_date: str, end_date: str, interval: str = DEFAULT_INTERVAL,
                  session_id: str = "crypto-demo-session", use_llm: bool = False,
-                 pairs: Optional[List[str]] = None, model: str = None):
+                 pairs: Optional[List[str]] = None, model: str = None,
+                 position_fraction: Optional[float] = None):
         # Swap backwards dates, matching the stock backtester's behavior.
         try:
             start = datetime.strptime(start_date, "%Y-%m-%d")
@@ -101,6 +102,14 @@ class CryptoBacktester:
         self.interval = interval
         self.session_id = session_id
         self.pairs = pairs or DEFAULT_PAIRS
+        # Share of equity each rule-based buy spends. Default: one equal slot
+        # per pair (1/N), so a single-pair plan can be fully invested — the
+        # stock backtester's flat 2% would leave ~98% of a one-pair plan in cash.
+        self.position_fraction = (
+            position_fraction if position_fraction is not None else 1.0 / len(self.pairs)
+        )
+        if not 0 < self.position_fraction <= 1:
+            raise ValueError(f"position_fraction must be in (0, 1], got {self.position_fraction}")
         # Crypto defaults to DeepSeek v4 Pro via OpenCode Zen (OpenAI-compatible);
         # override with --model. The stock backtest keeps its Anthropic default.
         self.model = model or OPENAI_COMPATIBLE_MODEL_NAME
@@ -154,7 +163,12 @@ class CryptoBacktester:
 
         # Crypto trades in fractional units: without this, a 2%-of-equity order
         # for BTC/ETH rounds down to 0 whole coins and the agent never trades.
-        manager = PortfolioManager(initial_capital=INITIAL_CAPITAL, fractional_units=True)
+        manager = PortfolioManager(
+            initial_capital=INITIAL_CAPITAL,
+            fractional_units=True,
+            position_fraction=self.position_fraction,
+        )
+        print(f"   Position size: {self.position_fraction:.1%} of equity per buy\n")
 
         # Collect all timestamps across pairs and keep bars with data for 80%+ pairs.
         all_timestamps = set()
@@ -388,6 +402,8 @@ def main():
                         help="Use LLM for trading decisions (default: rule-based)")
     parser.add_argument("--no-llm", dest="use_llm", action="store_false",
                         help="Disable LLM, use rule-based logic")
+    parser.add_argument("--position-fraction", type=float, default=None,
+                        help="Share of equity per rule-based buy, in (0, 1] (default: 1 / number of pairs).")
     parser.add_argument("--model", default=None,
                         help=f"Override the LLM model id (default: {OPENAI_COMPATIBLE_MODEL_NAME}).")
 
@@ -427,6 +443,7 @@ def main():
         session_id=args.session_id,
         use_llm=args.use_llm,
         model=args.model,
+        position_fraction=args.position_fraction,
     )
 
     print("1️⃣ Loading historical data from Binance...")
